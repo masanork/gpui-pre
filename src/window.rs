@@ -2089,11 +2089,19 @@ impl Window {
             #[cfg(feature = "profiler")]
             window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
             last_input_modality: InputModality::Mouse,
-            touch_gestures: TouchGestureRecognizer::new(
-                cx.platform
-                    .gestures()
-                    .map_or_else(GestureTuning::default, |gestures| gestures.tuning()),
-            ),
+            touch_gestures: {
+                let gestures = cx.platform.gestures();
+                let tuning = gestures
+                    .as_ref()
+                    .map_or_else(GestureTuning::default, |g| g.tuning());
+                let mut recognizer = TouchGestureRecognizer::new(tuning);
+                recognizer.set_native_touch_pinch(
+                    gestures
+                        .as_ref()
+                        .is_some_and(|g| g.native_direct_touch_pinch()),
+                );
+                recognizer
+            },
             touch_prediction_enabled: true,
             long_press_timer: None,
             long_press_capture: None,
@@ -5944,6 +5952,13 @@ impl Window {
                 cx.propagate_event = true;
                 self.dispatch_mouse_event(&up, cx);
             }
+            RecognizedTouchGesture::Pinch(mut pinch) => {
+                self.mouse_position = pinch.position;
+                pinch.modifiers = self.modifiers;
+                cx.propagate_event = true;
+                self.default_prevented = false;
+                self.dispatch_mouse_event(&pinch, cx);
+            }
             RecognizedTouchGesture::TouchDrag(touch_drag) => {
                 self.mouse_position = touch_drag.start_position;
                 cx.propagate_event = true;
@@ -7913,7 +7928,7 @@ mod tests {
         DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
         FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
         Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-        Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        PinchEvent, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent, TouchEvent,
         TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowOptions,
         canvas, div, hsla, point, px, size,
@@ -8864,6 +8879,80 @@ mod tests {
 
     struct TouchDragListener {
         events: Rc<RefCell<Vec<(TouchPhase, Pixels)>>>,
+    }
+
+    struct PinchListener {
+        events: Rc<RefCell<Vec<(TouchPhase, f32, Pixels)>>>,
+    }
+
+    impl Render for PinchListener {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let events = self.events.clone();
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |event: &PinchEvent, phase, _, _| {
+                        if phase == DispatchPhase::Bubble {
+                            events.borrow_mut().push((event.phase, event.delta, event.position.x));
+                        }
+                    });
+                },
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn raw_touches_dispatch_pinch_and_preserve_native_pinch(cx: &mut TestAppContext) {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.add_window({
+            let events = events.clone();
+            move |_, _| PinchListener { events }
+        });
+        dispatch_touch(window, cx, TouchId(1), TouchPhase::Started, 10.);
+        dispatch_touch(window, cx, TouchId(2), TouchPhase::Started, 20.);
+        dispatch_touch(window, cx, TouchId(2), TouchPhase::Moved, 30.);
+        dispatch_touch(window, cx, TouchId(2), TouchPhase::Ended, 30.);
+        dispatch_touch(window, cx, TouchId(1), TouchPhase::Ended, 10.);
+        window.update(cx, |_, window, cx| {
+            window.dispatch_event(PlatformInput::Pinch(PinchEvent {
+                position: point(px(40.), px(0.)),
+                delta: 0.25,
+                phase: TouchPhase::Moved,
+                ..Default::default()
+            }), cx);
+        }).unwrap();
+        assert_eq!(events.borrow().as_slice(), [
+            (TouchPhase::Started, 0., px(15.)),
+            (TouchPhase::Moved, 1., px(20.)),
+            (TouchPhase::Ended, 0., px(20.)),
+            (TouchPhase::Moved, 0.25, px(40.)),
+        ]);
+    }
+
+    #[gpui::test]
+    fn native_direct_touch_pinch_is_not_duplicated(cx: &mut TestAppContext) {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.add_window({
+            let events = events.clone();
+            move |_, _| PinchListener { events }
+        });
+        window.update(cx, |_, window, _| {
+            window.touch_gestures.set_native_touch_pinch(true);
+        }).unwrap();
+        dispatch_touch(window, cx, TouchId(1), TouchPhase::Started, 10.);
+        dispatch_touch(window, cx, TouchId(2), TouchPhase::Started, 20.);
+        dispatch_touch(window, cx, TouchId(2), TouchPhase::Moved, 30.);
+        window.update(cx, |_, window, cx| {
+            window.dispatch_event(PlatformInput::Pinch(PinchEvent {
+                position: point(px(20.), px(0.)),
+                delta: 1.,
+                phase: TouchPhase::Moved,
+                ..Default::default()
+            }), cx);
+        }).unwrap();
+        dispatch_touch(window, cx, TouchId(2), TouchPhase::Ended, 30.);
+        dispatch_touch(window, cx, TouchId(1), TouchPhase::Ended, 10.);
+        assert_eq!(events.borrow().as_slice(), [(TouchPhase::Moved, 1., px(20.))]);
     }
 
     impl Render for TouchDragListener {
