@@ -205,6 +205,15 @@ impl Application {
         self
     }
 
+    /// Registers fonts for SVG rasterization using the current asset source.
+    /// Call after setting the asset source and before starting the application.
+    pub fn with_svg_fonts(self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> Self {
+        let mut context = self.0.borrow_mut();
+        context.svg_renderer = SvgRenderer::with_fonts(context.asset_source.clone(), fonts);
+        drop(context);
+        self
+    }
+
     /// Configures arguments to pass when restarting the application.
     pub fn with_restart_arguments(self, arguments: Vec<OsString>) -> Self {
         self.0.borrow_mut().restart_arguments = arguments;

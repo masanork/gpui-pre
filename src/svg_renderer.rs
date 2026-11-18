@@ -7,6 +7,7 @@ use image::Frame;
 use resvg::tiny_skia::Pixmap;
 use smallvec::SmallVec;
 use std::{
+    borrow::Cow,
     hash::Hash,
     sync::{Arc, LazyLock, OnceLock},
 };
@@ -123,6 +124,14 @@ impl From<f32> for SvgSize {
 impl SvgRenderer {
     /// Creates a new SVG renderer with the provided asset source.
     pub fn new(asset_source: Arc<dyn AssetSource>) -> Self {
+        Self::with_fonts(asset_source, Vec::new())
+    }
+
+    /// Creates a renderer with font bytes supplied by the application.
+    pub(crate) fn with_fonts(
+        asset_source: Arc<dyn AssetSource>,
+        fonts: Vec<Cow<'static, [u8]>>,
+    ) -> Self {
         static SYSTEM_FONT_DB: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
             let mut db = usvg::fontdb::Database::new();
             db.load_system_fonts();
@@ -143,6 +152,9 @@ impl SvgRenderer {
                     let fontdb = enriched_fontdb.get_or_init(|| {
                         let mut db = (**SYSTEM_FONT_DB).clone();
                         load_bundled_fonts(&*asset_source, &mut db);
+                        for font in &fonts {
+                            db.load_font_source(usvg::fontdb::Source::Binary(Arc::new(font.clone())));
+                        }
                         fix_generic_font_families(&mut db);
                         Arc::new(db)
                     });
