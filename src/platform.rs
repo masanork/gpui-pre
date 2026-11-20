@@ -2,6 +2,7 @@
 // Modified by ibis inc. for ibisOffice (2026-09-29): added `PlatformTextSystem::font_data`.
 // Modified by ibis inc. for ibisOffice (2026-10-20): added `PlatformTextSystem::synthetic_style`.
 // Modified by ibis inc. for ibisOffice (2026-10-28): added `PlatformTextSystem::font_variations`.
+// Modified by ibis inc. for ibisOffice (2026-11-14): added `PlatformWindow::discard_marked_text`.
 mod app_menu;
 mod keyboard;
 mod keystroke;
@@ -13,13 +14,13 @@ pub mod layer_shell;
 /// Types for configuring parent-anchored popup windows such as menus, dropdowns and tooltips.
 pub mod popup;
 
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
 mod threaded_dispatcher;
 
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
 mod test;
 
-#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+#[cfg(all(target_os = "macos", any(test, feature = "headless-app")))]
 mod visual_test;
 
 #[cfg(all(
@@ -54,7 +55,7 @@ use anyhow::{Context as _, Result};
 use async_task::Runnable;
 use collections::FxHashMap;
 use futures::channel::oneshot;
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
 use image::RgbaImage;
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder as _, DynamicImage, Frame};
@@ -123,16 +124,16 @@ impl WindowVisibility {
     }
 }
 
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
 pub(crate) use test::*;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "headless-app"))]
 pub use test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream};
 
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
 pub use threaded_dispatcher::ThreadedDispatcher;
 
-#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+#[cfg(all(target_os = "macos", any(test, feature = "headless-app")))]
 pub use visual_test::VisualTestPlatform;
 
 /// Keeps an operating system activity, such as an idle sleep inhibitor, alive until dropped.
@@ -1047,6 +1048,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
 
+    /// Ends the input method's composition session without a callback to the input handler (macOS: `discardMarkedText`), for when
+    /// the app has already taken the composing text in and moved on (another cell was chosen). A no-op where there is nothing to do.
+    fn discard_marked_text(&self) {}
+
     // Mobile platform methods.
 
     /// The regions of this window currently obscured or reserved by the
@@ -1090,7 +1095,7 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Inform the adapter of updated window bounds.
     fn a11y_update_window_bounds(&self) {}
 
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
         None
     }
@@ -1098,14 +1103,14 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Renders the given scene to a texture and returns the pixel data as an RGBA image.
     /// This does not present the frame to screen - useful for visual testing where we want
     /// to capture what would be rendered without displaying it or requiring the window to be visible.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "headless-app"))]
     fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
         anyhow::bail!("render_to_image not implemented for this platform")
     }
 }
 
 /// A renderer for headless windows that can produce real rendered output.
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
 pub trait PlatformHeadlessRenderer {
     /// Render a scene and return the result as an RGBA image.
     fn render_scene_to_image(
@@ -1175,14 +1180,14 @@ pub trait PlatformDispatcher: Send + Sync {
         ActivityGuard::noop()
     }
 
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
     fn as_test(&self) -> Option<&TestDispatcher> {
         None
     }
 
     // This cfg must match the `threaded_dispatcher` module's, which implements
     // this method whenever it compiles.
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
     fn as_threaded(&self) -> Option<&ThreadedDispatcher> {
         None
     }
@@ -1223,6 +1228,13 @@ pub trait PlatformTextSystem: Send + Sync {
     /// Added in ibisOffice's fork of gpui-pre 0.3.6.
     fn font_variations(&self, _font_id: FontId) -> Vec<([u8; 4], f32)> {
         Vec::new()
+    }
+    /// For a glyph the platform draws itself (the browser's Canvas), not from a font file: what it draws and the font it was asked for,
+    /// so that a PDF can write the text with a font file of its own. `None` for a glyph of a font file (see `font_data`).
+    ///
+    /// Added in ibisOffice's fork of gpui-pre 0.3.6 (modified by ibis inc.).
+    fn drawn_glyph(&self, _font_id: FontId, _glyph_id: GlyphId) -> Option<crate::DrawnGlyph> {
+        None
     }
     /// Get typographic bounds for a glyph.
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>>;
@@ -1470,7 +1482,7 @@ pub trait PlatformAtlas {
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
 
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
     fn contains(&self, _key: &AtlasKey) -> bool {
         false
     }
@@ -1600,7 +1612,7 @@ impl PlatformAtlas for HeadlessAtlas {
         self.0.lock().remove(key);
     }
 
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    #[cfg(any(test, feature = "headless-app", feature = "bench-support"))]
     fn contains(&self, key: &AtlasKey) -> bool {
         self.0.lock().contains(key)
     }
@@ -1829,28 +1841,17 @@ impl PlatformInputHandler {
         mut bounds_for_range: impl FnMut(Range<usize>) -> Option<Bounds<Pixels>>,
     ) -> Option<Bounds<Pixels>> {
         if let Some(marked_range) = marked_range {
-            // Default to the start of the marked (composing) range.
-            let mut line_start = marked_range.start;
-
-            // Walk backward from the caret looking for a line break. A change in
-            // the Y coordinate means we crossed into the previous visual line, so
-            // the line start is one position after the break point.
-            // Modified by ibis inc.: the walk starts at the END of the marked text, not at the caret (the caret may sit inside the
-            // marked text while a clause is being converted), so the candidate window is placed under the LAST line of the marked
-            // text and never over a wrapped part of it.
+            // Modified by ibis inc.: the candidate window opens under the LAST character of the composing text (the newest one, where the
+            // typing is; on the last line when the text wraps), not at the start of its line or of the marked range. The rectangle asked for
+            // is that character's (`end - 1..end`; a handler that takes only the start of a range gives the place that character starts at);
+            // an empty marked range is the position itself.
             let _ = selection;
-            let caret = marked_range.end;
-            if let Some(caret_bounds) = bounds_for_range(caret..caret) {
-                for i in (marked_range.start..caret).rev() {
-                    if let Some(b) = bounds_for_range(i..i) {
-                        if (b.origin.y - caret_bounds.origin.y).abs() > px(0.1) {
-                            line_start = i + 1;
-                            break;
-                        }
-                    }
+            if marked_range.end > marked_range.start {
+                if let Some(bounds) = bounds_for_range(marked_range.end - 1..marked_range.end) {
+                    return Some(bounds);
                 }
             }
-            bounds_for_range(line_start..line_start)
+            bounds_for_range(marked_range.end..marked_range.end)
         } else {
             // No active composition — use the selection endpoint.
             let offset = if selection.reversed {
@@ -3173,7 +3174,7 @@ impl Image {
 
     /// Check whether this image is present in GPUI's asset cache (loading or
     /// loaded), without fetching it.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "headless-app"))]
     pub fn is_asset_cached(self: &Arc<Self>, cx: &App) -> bool {
         ImageSource::Image(self.clone()).is_asset_cached(cx)
     }
