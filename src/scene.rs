@@ -1,6 +1,7 @@
 // Modified by ibis inc. for ibisOffice (2026-09-29): a `Path` keeps the outline it was tessellated from (`Path::outline`).
 // Modified by ibis inc. for ibisOffice (2026-10-18): added `SceneSnapshot`, `Scene::snapshot_bounds`, and `Scene::replay_scaled`.
 // Modified by ibis inc. for ibisOffice (2026-10-21): added `OutlineDash` and `OutlineStroke::dash` (a stroked outline keeps its dash pattern for a PDF).
+// Modified by ibis inc. for ibisOffice (2026-11-23): `OffscreenReadback` (the pixels of an offscreen pass, read back without blocking).
 // Modified by ibis inc. for ibisOffice (2026-11-08): offscreen passes (`Scene::begin_offscreen`) and `TexturedQuad`, a texture drawn with a 3D transform.
 // todo("windows"): remove
 #![cfg_attr(windows, allow(dead_code))]
@@ -141,11 +142,24 @@ impl Scene {
                     id,
                     size,
                     scene: Scene::default(),
+                    readback: None,
                 });
                 self.offscreens.len() - 1
             }
         };
         self.current_offscreen = Some((index, origin));
+    }
+
+    /// Asks for the pixels of the offscreen pass `id` painted in this scene (see [`OffscreenReadback`]); with no such pass, a readback with no picture.
+    pub fn request_offscreen_readback(&mut self, id: OffscreenId) -> OffscreenReadback {
+        match self.offscreens.iter_mut().find(|pass| pass.id == id) {
+            Some(pass) => {
+                let (sender, readback) = OffscreenReadback::channel();
+                pass.readback = Some(sender);
+                readback
+            }
+            None => OffscreenReadback::unavailable(),
+        }
     }
 
     /// Whether painting goes to an offscreen pass now.
@@ -1291,6 +1305,105 @@ pub struct OffscreenPass {
     pub id: OffscreenId,
     pub size: Size<DevicePixels>,
     pub scene: Scene,
+    /// Asked for with [`Window::read_back_offscreen`]: the renderer gives the pass's pixels to it once it has drawn them.
+    pub readback: Option<OffscreenReadbackSender>,
+}
+
+/// The pixels of an offscreen pass, read back from the texture: straight (not premultiplied) RGBA, 8 bits each, row by row from the top left,
+/// `width * height * 4` bytes.
+///
+/// Added in ibisOffice's fork of gpui-pre 0.3.6.
+#[derive(Clone, Debug)]
+pub struct OffscreenPixels {
+    /// Width in device pixels.
+    pub width: u32,
+    /// Height in device pixels.
+    pub height: u32,
+    /// The pixels as R, G, B, A.
+    pub rgba: Vec<u8>,
+}
+
+#[derive(Default)]
+struct ReadbackState {
+    claimed: bool,
+    result: Option<Option<OffscreenPixels>>,
+    waker: Option<std::task::Waker>,
+}
+
+/// The pixels of an offscreen pass, to come (see [`Window::read_back_offscreen`]): a future that is ready with the picture when the renderer has
+/// drawn the pass and the graphics device has copied it (`None` when the pass was not drawn, or the renderer cannot read it back). It does not
+/// block: in the browser the copy finishes on a later turn of its event loop.
+///
+/// Added in ibisOffice's fork of gpui-pre 0.3.6.
+pub struct OffscreenReadback {
+    shared: std::sync::Arc<std::sync::Mutex<ReadbackState>>,
+}
+
+/// The renderer's end of an [`OffscreenReadback`].
+///
+/// Added in ibisOffice's fork of gpui-pre 0.3.6.
+#[derive(Clone)]
+pub struct OffscreenReadbackSender {
+    shared: std::sync::Arc<std::sync::Mutex<ReadbackState>>,
+}
+
+impl OffscreenReadback {
+    /// A readback and the end that completes it.
+    pub fn channel() -> (OffscreenReadbackSender, OffscreenReadback) {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(ReadbackState::default()));
+        (OffscreenReadbackSender { shared: shared.clone() }, OffscreenReadback { shared })
+    }
+
+    /// A readback that is over already, with no picture.
+    pub fn unavailable() -> OffscreenReadback {
+        let (sender, readback) = Self::channel();
+        sender.complete(None);
+        readback
+    }
+}
+
+impl OffscreenReadbackSender {
+    /// Takes the job of reading the pass back: true for the first caller only (a scene drawn again does not copy again).
+    pub fn claim(&self) -> bool {
+        let mut state = self.shared.lock().unwrap();
+        !std::mem::replace(&mut state.claimed, true)
+    }
+
+    /// Whether the pixels (or the lack of them) have been given.
+    pub fn is_complete(&self) -> bool {
+        self.shared.lock().unwrap().result.is_some()
+    }
+
+    /// Gives the pixels, or `None` when there are none, and wakes whoever waits.
+    pub fn complete(&self, pixels: Option<OffscreenPixels>) {
+        let waker = {
+            let mut state = self.shared.lock().unwrap();
+            if state.result.is_some() {
+                return;
+            }
+            state.claimed = true;
+            state.result = Some(pixels);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+impl std::future::Future for OffscreenReadback {
+    type Output = Option<OffscreenPixels>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let mut state = self.shared.lock().unwrap();
+        match state.result.take() {
+            Some(result) => std::task::Poll::Ready(result),
+            None => {
+                state.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
 }
 
 /// An offscreen texture drawn as a rectangle that a 4x4 transform places in 3D, with an opacity.

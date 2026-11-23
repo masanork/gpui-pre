@@ -1,3 +1,4 @@
+// Modified by ibis inc. for ibisOffice (2026-11-23): added `Window::read_back_offscreen`.
 // Modified by ibis inc. for ibisOffice (2026-11-08): added `Window::paint_offscreen` and `Window::paint_textured_quad`.
 // Modified by ibis inc. (2026-10-26): honor interceptor propagation stops before low-level key listeners.
 // Modified by ibis inc. for ibisOffice (2026-09-25): added `Window::paint_glyph_transformed`.
@@ -5344,6 +5345,23 @@ impl Window {
         self.content_mask_stack = saved_masks;
         self.next_frame.scene.end_offscreen();
         result
+    }
+
+    /// The pixels of the offscreen pass `id` painted in this frame (see [`Window::paint_offscreen`]), as a future: the renderer copies the
+    /// texture back once it has drawn the frame, and the future is ready (without blocking, also in the browser) with straight RGBA pixels
+    /// of the pass's size, or with `None` when the pass was not painted, the frame was only recorded, or the renderer cannot read it back.
+    /// Call it after `paint_offscreen`, in the same paint phase, and make sure that a frame is drawn (the window's frame is not drawn
+    /// while nothing changed).
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    ///
+    /// Added in ibisOffice's fork of gpui-pre 0.3.6.
+    pub fn read_back_offscreen(&mut self, id: crate::OffscreenId) -> crate::OffscreenReadback {
+        self.invalidator.debug_assert_paint();
+        if self.paint_record_only {
+            return crate::OffscreenReadback::unavailable();
+        }
+        self.next_frame.scene.request_offscreen_readback(id)
     }
 
     /// Paints the offscreen texture `id` (see [`Window::paint_offscreen`]) as the rectangle `bounds` (logical pixels;
