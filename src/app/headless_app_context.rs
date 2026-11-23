@@ -44,6 +44,7 @@ pub struct HeadlessAppContext {
     pub foreground_executor: ForegroundExecutor,
     dispatcher: TestDispatcher,
     text_system: Arc<TextSystem>,
+    platform: Rc<TestPlatform>,
 }
 
 impl HeadlessAppContext {
@@ -88,7 +89,7 @@ impl HeadlessAppContext {
 
         let text_system = Arc::new(TextSystem::new(platform_text_system));
         let http_client = http_client::FakeHttpClient::with_404_response();
-        let app = App::new_app(platform, asset_source, http_client);
+        let app = App::new_app(platform.clone(), asset_source, http_client);
         app.borrow_mut().mode = GpuiMode::test();
 
         Self {
@@ -97,7 +98,16 @@ impl HeadlessAppContext {
             foreground_executor,
             dispatcher,
             text_system,
+            platform,
         }
+    }
+
+    /// Answers the oldest pending file picker prompt in the test platform.
+    pub fn simulate_path_prompt_response(
+        &self,
+        select_paths: impl FnOnce(&crate::PathPromptOptions) -> Option<Vec<std::path::PathBuf>>,
+    ) {
+        self.platform.simulate_path_prompt_response(select_paths);
     }
 
     /// Opens a window for headless rendering.
