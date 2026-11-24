@@ -27,6 +27,7 @@ pub(crate) use platform_scheduler::PlatformScheduler;
 mod geometry;
 mod gestures;
 mod pinch_tracker;
+pub mod scroll_motion;
 mod global;
 mod input;
 mod inspector;
