@@ -1035,6 +1035,8 @@ fn scroll_event(
     touch_phase: TouchPhase,
 ) -> ScrollWheelEvent {
     ScrollWheelEvent {
+        // One finger panning (the recognizer follows a single touch); two fingers do not come through here (ibisOffice K0065).
+        touch_fingers: 1,
         position,
         delta: ScrollDelta::Pixels(delta),
         modifiers: Modifiers::default(),

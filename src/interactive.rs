@@ -531,6 +531,11 @@ pub struct ScrollWheelEvent {
 
     /// The phase of the touch event.
     pub touch_phase: TouchPhase,
+
+    /// How many fingers made this scroll (modified by ibis inc., ibisOffice K0065): `0` for a wheel, a trackpad or any input that is not
+    /// fingers on a touch screen, `1` for one finger dragging (a pan), `2` for two fingers swiping together. A scroll area that takes the
+    /// one finger for something else (selecting) takes only the two.
+    pub touch_fingers: u8,
 }
 
 impl Sealed for ScrollWheelEvent {}
