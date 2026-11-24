@@ -303,7 +303,8 @@ mod tests {
             ticks += 1;
             assert!(ticks < 2000, "it stops");
         }
-        assert!((motion.offset() - (10. + 499.5)).abs() < 3., "{}", motion.offset());
+        // It stops when the speed is down to STOP_SPEED (10 px/s), which leaves 10 / 2.002 = 5 px of the 499.5 px unspent.
+        assert!((motion.offset() - (10. + 499.5 - STOP_SPEED / 2.002)).abs() < 1., "{}", motion.offset());
     }
 
     #[test]
