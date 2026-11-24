@@ -1242,6 +1242,8 @@ pub struct Window {
     touch_session: Option<crate::TouchId>,
     touch_prediction_enabled: bool,
     long_press_timer: Option<Task<()>>,
+    /// The task that steps a touch fling (ibis inc., ibisOffice K0065: on the executor's clock, so that a test with a fake clock moves it).
+    touch_momentum_task: Option<Task<()>>,
     long_press_capture: Option<EntityId>,
     pub(crate) refreshing: bool,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
@@ -2103,6 +2105,7 @@ impl Window {
             ),
             touch_prediction_enabled: true,
             long_press_timer: None,
+            touch_momentum_task: None,
             long_press_capture: None,
             refreshing: false,
             activation_observers: SubscriberSet::new(),
@@ -6191,7 +6194,9 @@ impl Window {
         if !self.touch_prediction_enabled {
             event.predicted_position = None;
         }
-        let recognized_gestures = self.touch_gestures.handle_event(&event);
+        // The executor's clock (a test's fake clock moves it; ibis inc., ibisOffice K0065).
+        let now = cx.background_executor().now();
+        let recognized_gestures = self.touch_gestures.handle_event_at(&event, now);
         if event.phase == crate::TouchPhase::Started
             && let Some(touch_drag) = self.touch_gestures.offer_touch_drag(event.id)
         {
@@ -6221,7 +6226,7 @@ impl Window {
             self.draw(cx).clear(cx);
         }
         if self.touch_gestures.has_momentum() {
-            self.schedule_touch_momentum_tick();
+            self.schedule_touch_momentum_tick(cx);
         }
     }
 
@@ -6302,15 +6307,35 @@ impl Window {
         }));
     }
 
-    fn schedule_touch_momentum_tick(&mut self) {
-        self.on_next_frame(|window, cx| {
-            if let Some(gesture) = window.touch_gestures.tick_momentum() {
-                window.dispatch_recognized_touch_gesture(gesture, cx);
+    /// Steps the fling every 16 ms on the executor's clock (modified by ibis inc., ibisOffice K0065: it was a step for each frame, which a test with a fake
+    /// clock does not draw).
+    fn schedule_touch_momentum_tick(&mut self, cx: &mut App) {
+        if self.touch_momentum_task.is_some() {
+            return;
+        }
+        self.touch_momentum_task = Some(self.spawn(cx, async move |cx| {
+            loop {
+                cx.background_executor
+                    .timer(std::time::Duration::from_millis(16))
+                    .await;
+                let more = cx
+                    .update(|window, cx| {
+                        let now = cx.background_executor().now();
+                        if let Some(gesture) = window.touch_gestures.tick_momentum_at(now) {
+                            window.dispatch_recognized_touch_gesture(gesture, cx);
+                        }
+                        window.touch_gestures.has_momentum()
+                    })
+                    .unwrap_or(false);
+                if !more {
+                    break;
+                }
             }
-            if window.touch_gestures.has_momentum() {
-                window.schedule_touch_momentum_tick();
-            }
-        });
+            cx.update(|window, _| {
+                window.touch_momentum_task = None;
+            })
+            .log_err();
+        }));
     }
 
     fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {

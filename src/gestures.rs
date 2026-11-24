@@ -629,7 +629,7 @@ impl TouchGestureRecognizer {
         self.handle_event_at(event, Instant::now())
     }
 
-    fn handle_event_at(
+    pub(crate) fn handle_event_at(
         &mut self,
         event: &TouchEvent,
         now: Instant,
@@ -1165,7 +1165,7 @@ impl TouchGestureRecognizer {
         self.tick_momentum_at(Instant::now())
     }
 
-    fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
+    pub(crate) fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
         let momentum = self.momentum.as_mut()?;
         let elapsed = now.duration_since(momentum.started_at);
         let distance = self
