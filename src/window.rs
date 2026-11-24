@@ -6232,6 +6232,13 @@ impl Window {
                 cx.propagate_event = true;
                 self.dispatch_mouse_event(&scroll_wheel, cx);
             }
+            RecognizedTouchGesture::FirstFingerTaken(position) => {
+                // ibis inc. (K0065): a second finger took the first one's gesture back (#209): the touch session is cancelled.
+                if self.touch_session.take().is_some() {
+                    self.end_cancelled_touch(cx);
+                    self.dispatch_touch_session(crate::TouchPhase::Cancelled, position, cx);
+                }
+            }
             RecognizedTouchGesture::Tap { down, up } => {
                 self.mouse_position = up.position;
                 cx.propagate_event = true;

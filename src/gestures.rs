@@ -535,6 +535,8 @@ pub(crate) enum RecognizedTouchGesture {
     },
     TouchDrag(TouchDragEvent),
     LongPress(LongPressEvent),
+    /// A second finger came down: what the first finger began is taken back (the window ends its touch session as cancelled).
+    FirstFingerTaken(Point<Pixels>),
 }
 
 enum TouchGestureState {
@@ -555,6 +557,16 @@ enum TouchGestureState {
     },
     LongPressing(ActiveTouch),
     TouchDragging(ActiveTouch),
+    /// Two fingers are down (modified by ibis inc., ibisOffice K0065): they scroll together. The first finger's gesture was taken back.
+    TwoFingers {
+        a: ActiveTouch,
+        b: ActiveTouch,
+        /// Where the middle of the two fingers was at the last step.
+        center: Point<Pixels>,
+        velocity_tracker: VelocityTracker,
+    },
+    /// What remains of two fingers after one lifted: the other is not a new gesture, it is ignored until it lifts.
+    Ignoring(TouchId),
 }
 
 struct ActiveTouch {
@@ -596,6 +608,8 @@ struct Momentum {
     duration: Duration,
     /// Distance already emitted along `direction`, in pixels.
     emitted_distance: f32,
+    /// How many fingers made the scroll this coasts on (modified by ibis inc., ibisOffice K0065): the events it makes say so.
+    fingers: u8,
 }
 
 impl TouchGestureRecognizer {
@@ -628,6 +642,7 @@ impl TouchGestureRecognizer {
                         momentum.position,
                         Point::default(),
                         TouchPhase::Ended,
+                        momentum.fingers,
                     )));
                     Some(momentum.axis)
                 } else {
@@ -654,6 +669,7 @@ impl TouchGestureRecognizer {
                             touch.start_position,
                             Point::default(),
                             TouchPhase::Started,
+                            1,
                         )));
                         self.state = TouchGestureState::Panning { touch, axis };
                     } else {
@@ -664,6 +680,8 @@ impl TouchGestureRecognizer {
                             touch_drag_offered: false,
                         };
                     }
+                } else {
+                    self.begin_two_fingers(event, now, &mut recognized);
                 }
             }
             TouchPhase::Moved => match mem::replace(&mut self.state, TouchGestureState::Idle) {
@@ -696,6 +714,7 @@ impl TouchGestureRecognizer {
                             touch.start_position,
                             delta,
                             TouchPhase::Started,
+                            1,
                         )));
                         self.state = TouchGestureState::Panning { touch, axis };
                     } else {
@@ -735,6 +754,7 @@ impl TouchGestureRecognizer {
                         touch.start_position,
                         delta,
                         TouchPhase::Moved,
+                        1,
                     )));
                     self.state = TouchGestureState::Panning { touch, axis };
                 }
@@ -755,6 +775,32 @@ impl TouchGestureRecognizer {
                         position: event.position,
                     }));
                     self.state = TouchGestureState::TouchDragging(touch);
+                }
+                TouchGestureState::TwoFingers {
+                    mut a,
+                    mut b,
+                    center: before,
+                    mut velocity_tracker,
+                } if a.id == event.id || b.id == event.id => {
+                    if a.id == event.id {
+                        a.last_position = event.position;
+                    } else {
+                        b.last_position = event.position;
+                    }
+                    let center = midpoint(a.last_position, b.last_position);
+                    velocity_tracker.push(now, center);
+                    recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+                        center,
+                        center - before,
+                        TouchPhase::Moved,
+                        2,
+                    )));
+                    self.state = TouchGestureState::TwoFingers {
+                        a,
+                        b,
+                        center,
+                        velocity_tracker,
+                    };
                 }
                 other => self.state = other,
             },
@@ -848,6 +894,7 @@ impl TouchGestureRecognizer {
                                 started_at: now,
                                 duration,
                                 emitted_distance,
+                                fingers: 1,
                             });
                         }
                     }
@@ -855,6 +902,7 @@ impl TouchGestureRecognizer {
                         touch.start_position,
                         release_delta,
                         TouchPhase::Ended,
+                        1,
                     )));
                 }
                 TouchGestureState::LongPressing(touch) if touch.id == event.id => {
@@ -871,6 +919,48 @@ impl TouchGestureRecognizer {
                         position: event.position,
                     }));
                 }
+                TouchGestureState::TwoFingers {
+                    a,
+                    b,
+                    center,
+                    velocity_tracker,
+                } if a.id == event.id || b.id == event.id => {
+                    let other = if a.id == event.id { b.id } else { a.id };
+                    // As for one finger: a release long after the last movement means the fingers had stopped.
+                    let stopped = velocity_tracker
+                        .latest_sample_time()
+                        .is_none_or(|latest| now.duration_since(latest) > VELOCITY_ASSUME_STOPPED_GAP);
+                    let velocity = if stopped {
+                        Point::default()
+                    } else {
+                        velocity_tracker.velocity()
+                    };
+                    let speed = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
+                    if speed >= self.tuning.min_fling_velocity {
+                        let speed = speed.min(MAX_FLING_VELOCITY);
+                        let duration = self.tuning.scroll_physics.fling_duration(speed);
+                        if !duration.is_zero() {
+                            self.momentum = Some(Momentum {
+                                position: center,
+                                direction: point(velocity.x / speed.max(f32::EPSILON), velocity.y / speed.max(f32::EPSILON)),
+                                axis: dominant_axis(point(px(velocity.x), px(velocity.y))),
+                                speed,
+                                started_at: now,
+                                duration,
+                                emitted_distance: 0.,
+                                fingers: 2,
+                            });
+                        }
+                    }
+                    recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+                        center,
+                        Point::default(),
+                        TouchPhase::Ended,
+                        2,
+                    )));
+                    self.state = TouchGestureState::Ignoring(other);
+                }
+                TouchGestureState::Ignoring(id) if id == event.id => {}
                 other => self.state = other,
             },
             TouchPhase::Cancelled => match mem::replace(&mut self.state, TouchGestureState::Idle) {
@@ -880,6 +970,7 @@ impl TouchGestureRecognizer {
                         touch.start_position,
                         Point::default(),
                         TouchPhase::Cancelled,
+                        1,
                     )));
                 }
                 TouchGestureState::LongPressing(touch) if touch.id == event.id => {
@@ -896,10 +987,88 @@ impl TouchGestureRecognizer {
                         position: event.position,
                     }));
                 }
+                TouchGestureState::TwoFingers { a, b, center, .. } if a.id == event.id || b.id == event.id => {
+                    let other = if a.id == event.id { b.id } else { a.id };
+                    recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+                        center,
+                        Point::default(),
+                        TouchPhase::Cancelled,
+                        2,
+                    )));
+                    self.state = TouchGestureState::Ignoring(other);
+                }
+                TouchGestureState::Ignoring(id) if id == event.id => {}
                 other => self.state = other,
             },
         }
         recognized
+    }
+
+    /// A second finger came down while the first was being recognized (modified by ibis inc., ibisOffice K0065): what the first finger began
+    /// is taken back, and the two fingers scroll together. A third finger, or one that comes while two fingers' remainder is ignored, is not a
+    /// new gesture.
+    fn begin_two_fingers(
+        &mut self,
+        event: &TouchEvent,
+        now: Instant,
+        recognized: &mut SmallVec<[RecognizedTouchGesture; 2]>,
+    ) {
+        let first = match mem::replace(&mut self.state, TouchGestureState::Idle) {
+            TouchGestureState::Pending { touch, .. } if touch.id != event.id => touch,
+            TouchGestureState::Panning { touch, .. } if touch.id != event.id => {
+                recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+                    touch.start_position,
+                    Point::default(),
+                    TouchPhase::Cancelled,
+                    1,
+                )));
+                touch
+            }
+            TouchGestureState::LongPressing(touch) if touch.id != event.id => {
+                recognized.push(RecognizedTouchGesture::LongPress(LongPressEvent {
+                    phase: TouchPhase::Cancelled,
+                    start_position: touch.start_position,
+                    position: touch.last_position,
+                }));
+                touch
+            }
+            TouchGestureState::TouchDragging(touch) if touch.id != event.id => {
+                recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                    phase: TouchPhase::Cancelled,
+                    start_position: touch.start_position,
+                    position: touch.last_position,
+                }));
+                touch
+            }
+            other => {
+                self.state = other;
+                return;
+            }
+        };
+        let mut velocity_tracker = VelocityTracker::default();
+        let second = ActiveTouch {
+            id: event.id,
+            start_position: event.position,
+            last_position: event.position,
+            emitted_position: event.position,
+            last_movement: Point::default(),
+            velocity_tracker: VelocityTracker::default(),
+        };
+        let center = midpoint(first.last_position, second.last_position);
+        velocity_tracker.push(now, center);
+        recognized.push(RecognizedTouchGesture::FirstFingerTaken(first.last_position));
+        recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+            center,
+            Point::default(),
+            TouchPhase::Started,
+            2,
+        )));
+        self.state = TouchGestureState::TwoFingers {
+            a: first,
+            b: second,
+            center,
+            velocity_tracker,
+        };
     }
 
     pub(crate) fn pending_long_press(&self) -> Option<(TouchId, Duration)> {
@@ -1012,31 +1181,38 @@ impl TouchGestureRecognizer {
             px(momentum.direction.y * step),
         );
         let position = momentum.position;
+        let fingers = momentum.fingers;
         if elapsed >= momentum.duration {
             self.momentum = None;
             Some(RecognizedTouchGesture::Scroll(scroll_event(
                 position,
                 delta,
                 TouchPhase::Ended,
+                fingers,
             )))
         } else {
             Some(RecognizedTouchGesture::Scroll(scroll_event(
                 position,
                 delta,
                 TouchPhase::Moved,
+                fingers,
             )))
         }
     }
+}
+
+fn midpoint(a: Point<Pixels>, b: Point<Pixels>) -> Point<Pixels> {
+    point((a.x + b.x) / 2., (a.y + b.y) / 2.)
 }
 
 fn scroll_event(
     position: Point<Pixels>,
     delta: Point<Pixels>,
     touch_phase: TouchPhase,
+    touch_fingers: u8,
 ) -> ScrollWheelEvent {
     ScrollWheelEvent {
-        // One finger panning (the recognizer follows a single touch); two fingers do not come through here (ibisOffice K0065).
-        touch_fingers: 1,
+        touch_fingers,
         position,
         delta: ScrollDelta::Pixels(delta),
         modifiers: Modifiers::default(),
