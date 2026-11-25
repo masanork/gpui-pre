@@ -22,7 +22,7 @@ use crate::{
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
-    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
+    MouseButton, MouseDownEvent, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
     Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
     RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
@@ -6277,7 +6277,37 @@ impl Window {
                 );
                 self.dispatch_mouse_event(&long_press, cx);
                 if started {
-                    let claimed = self.default_prevented;
+                    // ibis inc. (ibisOffice K0073): a finger held on the spot is the right click of a touch screen. When nothing claimed the
+                    // long press (a tooltip does), it enters as the right button going down and up at the spot, the one entrance every
+                    // context menu has, and the long press is claimed when something took that right click (stopped it), so that lifting
+                    // the finger is no tap that would close the menu or run what is under the finger. A mouse button held is no touch
+                    // and never reaches here.
+                    let mut claimed = self.default_prevented;
+                    if !claimed {
+                        let position = long_press.start_position;
+                        cx.propagate_event = true;
+                        self.dispatch_mouse_event(
+                            &MouseDownEvent {
+                                button: MouseButton::Right,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            },
+                            cx,
+                        );
+                        claimed = !cx.propagate_event;
+                        cx.propagate_event = true;
+                        self.dispatch_mouse_event(
+                            &MouseUpEvent {
+                                button: MouseButton::Right,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            },
+                            cx,
+                        );
+                    }
                     self.touch_gestures.resolve_long_press(claimed);
                     if !claimed {
                         self.long_press_capture = None;
