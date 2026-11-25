@@ -563,6 +563,9 @@ enum TouchGestureState {
         b: ActiveTouch,
         /// Where the middle of the two fingers was at the last step.
         center: Point<Pixels>,
+        /// Where the middle was when the second finger came down: the scroll events are delivered there, so that the gesture stays with the container it began
+        /// on however far the fingers go (as a one-finger pan's are, at its starting position).
+        origin: Point<Pixels>,
         velocity_tracker: VelocityTracker,
     },
     /// What remains of two fingers after one lifted: the other is not a new gesture, it is ignored until it lifts.
@@ -780,6 +783,7 @@ impl TouchGestureRecognizer {
                     mut a,
                     mut b,
                     center: before,
+                    origin,
                     mut velocity_tracker,
                 } if a.id == event.id || b.id == event.id => {
                     if a.id == event.id {
@@ -790,7 +794,7 @@ impl TouchGestureRecognizer {
                     let center = midpoint(a.last_position, b.last_position);
                     velocity_tracker.push(now, center);
                     recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
-                        center,
+                        origin,
                         center - before,
                         TouchPhase::Moved,
                         2,
@@ -799,6 +803,7 @@ impl TouchGestureRecognizer {
                         a,
                         b,
                         center,
+                        origin,
                         velocity_tracker,
                     };
                 }
@@ -922,8 +927,9 @@ impl TouchGestureRecognizer {
                 TouchGestureState::TwoFingers {
                     a,
                     b,
-                    center,
+                    origin,
                     velocity_tracker,
+                    ..
                 } if a.id == event.id || b.id == event.id => {
                     let other = if a.id == event.id { b.id } else { a.id };
                     // As for one finger: a release long after the last movement means the fingers had stopped.
@@ -941,7 +947,7 @@ impl TouchGestureRecognizer {
                         let duration = self.tuning.scroll_physics.fling_duration(speed);
                         if !duration.is_zero() {
                             self.momentum = Some(Momentum {
-                                position: center,
+                                position: origin,
                                 direction: point(velocity.x / speed.max(f32::EPSILON), velocity.y / speed.max(f32::EPSILON)),
                                 axis: dominant_axis(point(px(velocity.x), px(velocity.y))),
                                 speed,
@@ -953,7 +959,7 @@ impl TouchGestureRecognizer {
                         }
                     }
                     recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
-                        center,
+                        origin,
                         Point::default(),
                         TouchPhase::Ended,
                         2,
@@ -987,10 +993,10 @@ impl TouchGestureRecognizer {
                         position: event.position,
                     }));
                 }
-                TouchGestureState::TwoFingers { a, b, center, .. } if a.id == event.id || b.id == event.id => {
+                TouchGestureState::TwoFingers { a, b, origin, .. } if a.id == event.id || b.id == event.id => {
                     let other = if a.id == event.id { b.id } else { a.id };
                     recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
-                        center,
+                        origin,
                         Point::default(),
                         TouchPhase::Cancelled,
                         2,
@@ -1067,6 +1073,7 @@ impl TouchGestureRecognizer {
             a: first,
             b: second,
             center,
+            origin: center,
             velocity_tracker,
         };
     }
