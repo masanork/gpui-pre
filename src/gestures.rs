@@ -2427,11 +2427,13 @@ mod tests {
         let moved = recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Moved, 100., 210.), now + Duration::from_millis(10));
         let RecognizedTouchGesture::Scroll(ref step) = moved[0] else { panic!("a step: {moved:?}") };
         assert_eq!(step.touch_fingers, 2);
-        assert_eq!(step.delta, ScrollDelta::Pixels(point(px(0.), px(5.))));
+        let ScrollDelta::Pixels(delta) = step.delta else { panic!("pixels") };
+        assert_eq!(delta, point(px(0.), px(5.)));
         assert_eq!(step.position, point(px(150.), px(200.)), "the gesture stays where it began, whatever the middle does");
         let moved = recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Moved, 200., 210.), now + Duration::from_millis(10));
         let RecognizedTouchGesture::Scroll(ref step) = moved[0] else { panic!("a step: {moved:?}") };
-        assert_eq!(step.delta, ScrollDelta::Pixels(point(px(0.), px(5.))));
+        let ScrollDelta::Pixels(delta) = step.delta else { panic!("pixels") };
+        assert_eq!(delta, point(px(0.), px(5.)));
     }
 
     /// Q16: two fingers lifting at speed coast with two fingers' events; what remains is ignored until it lifts and is not a new gesture.
