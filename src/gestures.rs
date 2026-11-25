@@ -2411,6 +2411,65 @@ mod tests {
         assert!(recognizer.offer_long_press(replacement_touch).is_some());
     }
 
+    /// Two raw fingers scroll together (ibis inc., ibisOffice K0065, Q16): the first finger's gesture is taken back, the scroll's events say two fingers
+    /// and stay at the place the two began, and each carries how far the middle of the two moved.
+    #[test]
+    fn two_fingers_scroll_by_the_movement_of_their_middle() {
+        let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+        let now = Instant::now();
+        recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 100., 200.), now);
+        let began = recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Started, 200., 200.), now);
+        assert!(matches!(began[0], RecognizedTouchGesture::FirstFingerTaken(_)), "the first finger's gesture is taken back");
+        let RecognizedTouchGesture::Scroll(ref started) = began[1] else { panic!("a scroll begins: {began:?}") };
+        assert_eq!((started.touch_phase, started.touch_fingers), (TouchPhase::Started, 2));
+        assert_eq!(started.position, point(px(150.), px(200.)), "at the middle of the two fingers");
+        // Each finger moves 10 px down: the middle moves 5 px per event.
+        let moved = recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Moved, 100., 210.), now + Duration::from_millis(10));
+        let RecognizedTouchGesture::Scroll(ref step) = moved[0] else { panic!("a step: {moved:?}") };
+        assert_eq!(step.touch_fingers, 2);
+        assert_eq!(step.delta, ScrollDelta::Pixels(point(px(0.), px(5.))));
+        assert_eq!(step.position, point(px(150.), px(200.)), "the gesture stays where it began, whatever the middle does");
+        let moved = recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Moved, 200., 210.), now + Duration::from_millis(10));
+        let RecognizedTouchGesture::Scroll(ref step) = moved[0] else { panic!("a step: {moved:?}") };
+        assert_eq!(step.delta, ScrollDelta::Pixels(point(px(0.), px(5.))));
+    }
+
+    /// Q16: two fingers lifting at speed coast with two fingers' events; what remains is ignored until it lifts and is not a new gesture.
+    #[test]
+    fn two_fingers_coast_and_the_remaining_finger_is_ignored() {
+        let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+        let now = Instant::now();
+        recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 100., 500.), now);
+        recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Started, 200., 500.), now);
+        // 1 px/ms up for 300 ms.
+        for step in 1..=30u64 {
+            let at = now + Duration::from_millis(10 * step);
+            let y = 500. - step as f32 * 10.;
+            recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Moved, 100., y), at);
+            recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Moved, 200., y), at);
+        }
+        let end = now + Duration::from_millis(310);
+        let ended = recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Ended, 100., 200.), end);
+        let RecognizedTouchGesture::Scroll(ref ended_scroll) = ended[0] else { panic!("the end: {ended:?}") };
+        assert_eq!((ended_scroll.touch_phase, ended_scroll.touch_fingers), (TouchPhase::Ended, 2));
+        assert!(recognizer.has_momentum(), "lifted at speed: it coasts");
+        // After 100 ms a coast of 1 px/ms has gone 90.6 px (0.998 per ms), upward, as two fingers' events.
+        let mut moved = 0.;
+        let mut t = end;
+        for _ in 0..7 {
+            t += Duration::from_millis(16);
+            if let Some(RecognizedTouchGesture::Scroll(step)) = recognizer.tick_momentum_at(t) {
+                assert_eq!(step.touch_fingers, 2);
+                let ScrollDelta::Pixels(d) = step.delta else { panic!() };
+                moved += f32::from(d.y);
+            }
+        }
+        assert!(moved < -80. && moved > -110., "about 90 px up in 112 ms: {moved}");
+        // The finger that stays is not a gesture of its own.
+        assert!(recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Moved, 200., 190.), t).is_empty());
+        assert!(recognizer.handle_event_at(&touch_event(TouchId(2), TouchPhase::Ended, 200., 190.), t).is_empty());
+    }
+
     fn touch_event(id: TouchId, phase: TouchPhase, x: f32, y: f32) -> TouchEvent {
         TouchEvent {
             id,
