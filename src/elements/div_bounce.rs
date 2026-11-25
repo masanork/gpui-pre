@@ -17,7 +17,7 @@ pub(crate) const TRACKING: f32 = 0.55;
 pub(crate) const RESPONSE_SECONDS: f32 = 0.524;
 
 /// The stretch along one axis.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub(crate) struct AxisBounce {
     position: f32,
     velocity: f32,
@@ -104,7 +104,7 @@ impl AxisBounce {
 }
 
 /// The stretch of a scroll area: its two axes, and what it learns of its extent at each layout.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct DivBounce {
     pub(crate) x: AxisBounce,
     pub(crate) y: AxisBounce,
