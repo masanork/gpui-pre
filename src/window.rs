@@ -6203,7 +6203,7 @@ impl Window {
             self.dispatch_recognized_touch_gesture(touch_drag, cx);
         }
         if event.phase == crate::TouchPhase::Started
-            && self.touch_gestures.pending_long_press().is_some()
+            && self.touch_gestures.pending_long_press(now).is_some()
         {
             self.long_press_capture = None;
         }
@@ -6214,7 +6214,7 @@ impl Window {
         }
         if event.phase == crate::TouchPhase::Started {
             self.schedule_long_press_timer(cx);
-        } else if self.touch_gestures.pending_long_press().is_none() {
+        } else if self.touch_gestures.pending_long_press(now).is_none() {
             self.long_press_timer.take();
         }
         // The platform's touch-release handler may inspect the input handler
@@ -6322,7 +6322,9 @@ impl Window {
 
     fn schedule_long_press_timer(&mut self, cx: &mut App) {
         self.long_press_timer.take();
-        let Some((touch_id, duration)) = self.touch_gestures.pending_long_press() else {
+        // The executor's clock, which the deadline was made from (modified by ibis inc., ibisOffice K0073: it was the real clock, which a test's fake clock does not move).
+        let now = cx.background_executor().now();
+        let Some((touch_id, duration)) = self.touch_gestures.pending_long_press(now) else {
             return;
         };
         self.long_press_timer = Some(self.spawn(cx, async move |cx| {

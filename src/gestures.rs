@@ -1078,7 +1078,7 @@ impl TouchGestureRecognizer {
         };
     }
 
-    pub(crate) fn pending_long_press(&self) -> Option<(TouchId, Duration)> {
+    pub(crate) fn pending_long_press(&self, now: Instant) -> Option<(TouchId, Duration)> {
         let TouchGestureState::Pending {
             touch,
             deadline,
@@ -1088,7 +1088,7 @@ impl TouchGestureRecognizer {
         else {
             return None;
         };
-        Some((touch.id, deadline.saturating_duration_since(Instant::now())))
+        Some((touch.id, deadline.saturating_duration_since(now)))
     }
 
     pub(crate) fn offer_long_press(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
