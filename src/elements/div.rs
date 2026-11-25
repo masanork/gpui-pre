@@ -43,6 +43,7 @@ use std::{
 };
 
 use super::ImageCacheProvider;
+use super::div_bounce::DivBounce;
 
 #[cfg(feature = "stacker")]
 type StackSafe<T> = stacksafe::StackSafe<T>;
@@ -1560,6 +1561,13 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// The scroll of this element does not stretch past its end for a finger's scroll (modified by ibis inc., ibisOffice K0065): every scrolling element does by default; one
+    /// inside an outer element that stretches (gpui-base's `ScrollBounce`) says so, so that the two do not stretch twice.
+    fn no_bounce(mut self) -> Self {
+        self.interactivity().no_bounce = true;
+        self
+    }
+
     /// Track the scroll state of this element with the given handle.
     fn track_scroll(mut self, scroll_handle: &ScrollHandle) -> Self {
         self.interactivity().tracked_scroll_handle = Some(scroll_handle.clone());
@@ -2162,6 +2170,10 @@ pub struct Interactivity {
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
     pub(crate) ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
+    /// The stretch past an end of the scroll for a finger's scroll (ibis inc., ibisOffice K0065); `None` for an element that does not scroll or has `no_bounce`.
+    pub(crate) bounce: Option<Rc<RefCell<DivBounce>>>,
+    /// The element's scroll does not stretch (an outer element does it: gpui-base's `ScrollBounce`).
+    pub(crate) no_bounce: bool,
     pub(crate) group: Option<SharedString>,
     /// The base style of the element, before any modifications are applied
     /// by focus, active, etc.
@@ -2288,6 +2300,7 @@ impl Interactivity {
                     let scroll_handle_state = scroll_handle.0.borrow();
                     self.scroll_offset = Some(scroll_handle_state.offset.clone());
                     self.ongoing_scroll = Some(scroll_handle_state.ongoing_scroll.clone());
+                    self.bounce = (!self.no_bounce).then(|| scroll_handle_state.bounce.clone());
                 } else if (self.base_style.overflow.x == Some(Overflow::Scroll)
                     || self.base_style.overflow.y == Some(Overflow::Scroll))
                     && let Some(element_state) = element_state.as_mut()
@@ -2304,6 +2317,7 @@ impl Interactivity {
                             .get_or_insert_with(|| Rc::new(RefCell::new(OngoingScroll::default())))
                             .clone(),
                     );
+                    self.bounce = (!self.no_bounce).then(|| element_state.bounce.get_or_insert_with(Rc::default).clone());
                 }
 
                 let style = self.compute_style_internal(None, element_state.as_mut(), window, cx);
@@ -2451,7 +2465,7 @@ impl Interactivity {
         bounds: Bounds<Pixels>,
         style: &Style,
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> Point<Pixels> {
         fn round_to_two_decimals(pixels: Pixels) -> Pixels {
             const ROUNDING_FACTOR: f32 = 100.0;
@@ -2505,7 +2519,24 @@ impl Interactivity {
                 scroll_handle_state.bounds = bounds;
             }
 
-            *scroll_offset
+            // The stretch past an end for a finger's scroll (ibis inc., ibisOffice K0065): what the area learns of its extent, the spring's step, and the
+            // displacement added to what is drawn (not to the scroll offset, which stays clamped).
+            let mut displaced = *scroll_offset;
+            if let Some(bounce) = self.bounce.as_ref() {
+                let mut bounce = bounce.borrow_mut();
+                bounce.scroll_max = scroll_max;
+                bounce.size = bounds.size;
+                let now = cx.background_executor().now();
+                let elapsed = bounce.sampled_at.replace(now).map_or(0., |at| now.duration_since(at).as_secs_f32());
+                let (x, y) = (bounce.x.step(elapsed), bounce.y.step(elapsed));
+                if x || y {
+                    window.request_animation_frame();
+                }
+                let shown = bounce.displacement();
+                displaced.x += shown.x;
+                displaced.y += shown.y;
+            }
+            displaced
         } else {
             Point::default()
         }
@@ -3351,6 +3382,7 @@ impl Interactivity {
             let line_height = window.line_height();
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
+            let bounce = self.bounce.clone();
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
@@ -3390,6 +3422,19 @@ impl Interactivity {
                         } else {
                             delta_x = Pixels::ZERO;
                         }
+                    }
+                    if event.touch_fingers != 0
+                        && let Some(bounce) = bounce.as_ref()
+                    {
+                        // A finger's scroll stretches past an end and springs back, as `UIScrollView` does (ibis inc., ibisOffice K0065).
+                        let mut bounce = bounce.borrow_mut();
+                        let started = event.touch_phase == TouchPhase::Started;
+                        let ended = matches!(event.touch_phase, TouchPhase::Ended | TouchPhase::Cancelled);
+                        let (max, size) = (bounce.scroll_max, bounce.size);
+                        scroll_offset.y = px(super::div_bounce::scroll_axis(&mut bounce.y, f32::from(scroll_offset.y), f32::from(delta_y), f32::from(max.y), f32::from(size.height), started, ended, overflow.y == Overflow::Scroll));
+                        scroll_offset.x = px(super::div_bounce::scroll_axis(&mut bounce.x, f32::from(scroll_offset.x), f32::from(delta_x), f32::from(max.x), f32::from(size.width), started, ended, overflow.x == Overflow::Scroll));
+                        cx.notify(current_view);
+                        return;
                     }
                     scroll_offset.y += delta_y;
                     scroll_offset.x += delta_x;
@@ -3637,6 +3682,7 @@ pub struct InteractiveElementState {
     pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<u64>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
+    bounce: Option<Rc<RefCell<DivBounce>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
 }
@@ -4236,6 +4282,7 @@ impl ScrollAnchor {
 struct ScrollHandleState {
     offset: Rc<RefCell<Point<Pixels>>>,
     ongoing_scroll: Rc<RefCell<OngoingScroll>>,
+    bounce: Rc<RefCell<DivBounce>>,
     bounds: Bounds<Pixels>,
     max_offset: Point<Pixels>,
     child_bounds: Vec<Bounds<Pixels>>,

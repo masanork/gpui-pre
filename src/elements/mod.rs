@@ -4,6 +4,7 @@ mod canvas;
 mod container_query;
 mod deferred;
 mod div;
+mod div_bounce;
 mod image_cache;
 mod img;
 mod list;
