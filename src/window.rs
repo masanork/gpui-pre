@@ -1807,12 +1807,8 @@ impl Window {
                         .log_err();
                 }
 
-                // Keep presenting if input was recently arriving at a high rate (>= 60fps).
-                // Once high-rate input is detected, we sustain presentation for 1 second
-                // to prevent display underclocking during active input.
-                let needs_present = request_frame_options.require_presentation
-                    || needs_present.get()
-                    || input_rate_tracker.borrow_mut().is_high_rate();
+                let needs_present =
+                    request_frame_options.require_presentation || needs_present.get();
 
                 if invalidator.is_dirty() || force_render {
                     measure("frame duration", || {
