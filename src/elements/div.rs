@@ -4333,6 +4333,19 @@ impl ScrollHandle {
         self.0.borrow().bounce.borrow().displacement()
     }
 
+    /// A finger's scroll along x, as a `Div` that tracks this handle makes it (a stretch past an end, the spring back, a fling stopped by the stretch), for an element that
+    /// is not the scrolling `Div` but stands for it (a bar laid over a strip of tabs; modified by ibis inc., ibisOffice K0078). `delta` is the finger's
+    /// movement this event; `phase` the scroll event's touch phase.
+    pub fn finger_scroll_x(&self, delta: Pixels, phase: TouchPhase) {
+        let state = self.0.borrow();
+        let mut bounce = state.bounce.borrow_mut();
+        let started = phase == TouchPhase::Started;
+        let ended = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        let (max, size) = (bounce.scroll_max, bounce.size);
+        let mut offset = state.offset.borrow_mut();
+        offset.x = px(super::div_bounce::scroll_axis(&mut bounce.x, f32::from(offset.x), f32::from(delta), f32::from(max.x), f32::from(size.width), started, ended, true));
+    }
+
     /// Get the maximum scroll offset.
     pub fn max_offset(&self) -> Point<Pixels> {
         self.0.borrow().max_offset
