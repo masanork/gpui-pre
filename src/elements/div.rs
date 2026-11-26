@@ -4327,6 +4327,12 @@ impl ScrollHandle {
         *self.0.borrow().offset.borrow()
     }
 
+    /// How far the content is displaced now by a finger's pull past an end (positive past the top or the left end, negative past the bottom or the right
+    /// one), for what reads it from outside (the scenarios of ibisOffice K0078; modified by ibis inc.).
+    pub fn bounce_offset(&self) -> Point<Pixels> {
+        self.0.borrow().bounce.borrow().displacement()
+    }
+
     /// Get the maximum scroll offset.
     pub fn max_offset(&self) -> Point<Pixels> {
         self.0.borrow().max_offset
