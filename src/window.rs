@@ -1245,6 +1245,8 @@ pub struct Window {
     /// The task that steps a touch fling (ibis inc., ibisOffice K0065: on the executor's clock, so that a test with a fake clock moves it).
     touch_momentum_task: Option<Task<()>>,
     long_press_capture: Option<EntityId>,
+    /// What an app keeps for this window by type (ibis inc., ibisOffice K0073 follow-up: see `window_data`); it goes with the window.
+    window_data: FxHashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     pub(crate) refreshing: bool,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
@@ -2107,6 +2109,7 @@ impl Window {
             long_press_timer: None,
             touch_momentum_task: None,
             long_press_capture: None,
+            window_data: FxHashMap::default(),
             refreshing: false,
             activation_observers: SubscriberSet::new(),
             focus: None,
@@ -3259,6 +3262,17 @@ impl Window {
     /// [`Self::prevent_default`] on the started event to claim the gesture.
     pub fn capture_long_press<T: 'static>(&mut self, entity: &Entity<T>) {
         self.long_press_capture = Some(entity.entity_id());
+    }
+
+    /// A value of type `T` that belongs to this window (made with `T::default()` the first time asked for) and is dropped with it. For state that is
+    /// the window's own and has no element or entity to live in, in place of a `thread_local!` or a `static`, which every window of the app shares
+    /// (modified by ibis inc., ibisOffice K0073 follow-up).
+    pub fn window_data<T: Default + 'static>(&mut self) -> &mut T {
+        self.window_data
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_mut::<T>()
+            .expect("window_data holds a T under T's own id")
     }
 
     /// Returns whether the given entity has captured the current long press.
