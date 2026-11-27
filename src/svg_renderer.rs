@@ -7,8 +7,9 @@ use image::Frame;
 use resvg::tiny_skia::Pixmap;
 use smallvec::SmallVec;
 use std::{
+    borrow::Cow,
     hash::Hash,
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{Arc, LazyLock, OnceLock, RwLock},
 };
 
 #[cfg(target_os = "macos")]
@@ -88,11 +89,37 @@ pub struct RenderSvgParams {
     pub size: Size<DevicePixels>,
 }
 
+struct SvgFonts {
+    assets: Arc<dyn AssetSource>,
+    initial: Vec<Cow<'static, [u8]>>,
+    database: OnceLock<RwLock<Arc<usvg::fontdb::Database>>>,
+}
+
+impl SvgFonts {
+    fn database(&self) -> &RwLock<Arc<usvg::fontdb::Database>> {
+        static SYSTEM_FONT_DB: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            Arc::new(db)
+        });
+        self.database.get_or_init(|| {
+            let mut db = (**SYSTEM_FONT_DB).clone();
+            load_bundled_fonts(&*self.assets, &mut db);
+            for font in &self.initial {
+                db.load_font_source(usvg::fontdb::Source::Binary(Arc::new(font.clone())));
+            }
+            fix_generic_font_families(&mut db);
+            RwLock::new(Arc::new(db))
+        })
+    }
+}
+
 #[derive(Clone)]
 /// A struct holding everything necessary to render SVGs.
 pub struct SvgRenderer {
     asset_source: Arc<dyn AssetSource>,
     usvg_options: Arc<usvg::Options<'static>>,
+    fonts: Arc<SvgFonts>,
 }
 
 /// A parsed SVG document that can be rasterized at any scale.
@@ -123,30 +150,25 @@ impl From<f32> for SvgSize {
 impl SvgRenderer {
     /// Creates a new SVG renderer with the provided asset source.
     pub fn new(asset_source: Arc<dyn AssetSource>) -> Self {
-        static SYSTEM_FONT_DB: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
-            let mut db = usvg::fontdb::Database::new();
-            db.load_system_fonts();
-            Arc::new(db)
+        Self::with_fonts(asset_source, Vec::new())
+    }
+
+    /// Creates a renderer with font bytes supplied by the application.
+    pub(crate) fn with_fonts(
+        asset_source: Arc<dyn AssetSource>,
+        fonts: Vec<Cow<'static, [u8]>>,
+    ) -> Self {
+        let fonts = Arc::new(SvgFonts {
+            assets: asset_source.clone(),
+            initial: fonts,
+            database: OnceLock::new(),
         });
-
-        // Build the enriched font DB lazily on first SVG render rather than
-        // eagerly at construction time. This avoids the expensive deep-clone
-        // of the system font database for code paths that never render SVGs
-        // (e.g. tests).
-        let enriched_fontdb: Arc<OnceLock<Arc<usvg::fontdb::Database>>> = Arc::new(OnceLock::new());
-
         let default_font_resolver = usvg::FontResolver::default_font_selector();
         let font_resolver = Box::new({
-            let asset_source = asset_source.clone();
+            let fonts = fonts.clone();
             move |font: &usvg::Font, db: &mut Arc<usvg::fontdb::Database>| {
                 if db.is_empty() {
-                    let fontdb = enriched_fontdb.get_or_init(|| {
-                        let mut db = (**SYSTEM_FONT_DB).clone();
-                        load_bundled_fonts(&*asset_source, &mut db);
-                        fix_generic_font_families(&mut db);
-                        Arc::new(db)
-                    });
-                    *db = fontdb.clone();
+                    *db = fonts.database().read().expect("SVG font lock").clone();
                 }
                 if let Some(id) = default_font_resolver(font, db) {
                     return Some(id);
@@ -184,7 +206,14 @@ impl SvgRenderer {
         Self {
             asset_source,
             usvg_options: Arc::new(options),
+            fonts,
         }
+    }
+
+    /// Adds a font for subsequent SVG parses, including parses by clones of this renderer.
+    pub fn add_font(&self, font: Cow<'static, [u8]>) {
+        let mut database = self.fonts.database().write().expect("SVG font lock");
+        Arc::make_mut(&mut database).load_font_source(usvg::fontdb::Source::Binary(Arc::new(font)));
     }
 
     /// Parses SVG data into a [`ParsedSvg`] that can be rasterized at any scale.
