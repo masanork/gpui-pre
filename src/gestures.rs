@@ -127,6 +127,9 @@ pub struct GestureTuning {
     /// Minimum release velocity, in pixels per second, required to start
     /// scroll momentum.
     pub min_fling_velocity: f32,
+    /// Whether a second finger promotes the gesture to a two-finger scroll
+    /// instead of a synthetic pinch.
+    pub two_finger_scroll: bool,
 }
 
 impl Default for GestureTuning {
@@ -138,6 +141,7 @@ impl Default for GestureTuning {
             long_press_duration: Duration::from_millis(500),
             scroll_physics: ScrollPhysics::ios(),
             min_fling_velocity: 50.,
+            two_finger_scroll: true,
         }
     }
 }
@@ -651,6 +655,10 @@ impl TouchGestureRecognizer {
         self.native_touch_pinch = native;
     }
 
+    pub(crate) fn set_two_finger_scroll(&mut self, enabled: bool) {
+        self.tuning.two_finger_scroll = enabled;
+    }
+
     pub(crate) fn handle_event(
         &mut self,
         event: &TouchEvent,
@@ -675,7 +683,7 @@ impl TouchGestureRecognizer {
                     .first_key_value()
                     .map(|(&id, &position)| (id, position));
                 self.contacts.insert(event.id, event.position);
-                if !self.suppress_single_touch && self.contacts.len() == 2 {
+                if !self.tuning.two_finger_scroll && !self.suppress_single_touch && self.contacts.len() == 2 {
                     let (first_id, first_position) = first.expect("first contact exists");
                     self.suppress_single_touch = true;
                     self.pinch_pair = Some((first_id, event.id));
@@ -2162,7 +2170,10 @@ mod tests {
 
     #[test]
     fn pinch_scales_and_suppresses_remaining_contacts() {
-        let mut r = TouchGestureRecognizer::new(GestureTuning::default());
+        let mut r = TouchGestureRecognizer::new(GestureTuning {
+            two_finger_scroll: false,
+            ..Default::default()
+        });
         let t = Instant::now();
         r.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 0., 0.), t);
         let start = r.handle_event_at(&touch_event(TouchId(2), TouchPhase::Started, 100., 0.), t);
@@ -2174,7 +2185,7 @@ mod tests {
                 ..
             })]
         ));
-        assert!(r.pending_long_press().is_none());
+        assert!(r.pending_long_press(t).is_none());
         let update = r.handle_event_at(&touch_event(TouchId(2), TouchPhase::Moved, 150., 0.), t);
         let [RecognizedTouchGesture::Pinch(event)] = update.as_slice() else {
             panic!("expected pinch: {update:?}")
@@ -2216,7 +2227,10 @@ mod tests {
     #[test]
     fn second_contact_cancels_pan_long_press_and_claimed_drag() {
         for mode in 0..3 {
-            let mut r = TouchGestureRecognizer::new(GestureTuning::default());
+            let mut r = TouchGestureRecognizer::new(GestureTuning {
+                two_finger_scroll: false,
+                ..Default::default()
+            });
             let t = Instant::now();
             r.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 0., 0.), t);
             match mode {
@@ -2272,13 +2286,16 @@ mod tests {
                 )),
             }
             assert!(!r.has_momentum());
-            assert!(r.pending_long_press().is_none());
+            assert!(r.pending_long_press(t).is_none());
         }
     }
 
     #[test]
     fn pinch_cancellation_extra_contacts_and_invalid_samples() {
-        let mut r = TouchGestureRecognizer::new(GestureTuning::default());
+        let mut r = TouchGestureRecognizer::new(GestureTuning {
+            two_finger_scroll: false,
+            ..Default::default()
+        });
         let t = Instant::now();
         r.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 0., 0.), t);
         r.handle_event_at(&touch_event(TouchId(2), TouchPhase::Started, 0., 0.), t);
@@ -2323,7 +2340,10 @@ mod tests {
 
     #[test]
     fn native_direct_touch_pinch_suppresses_only_synthetic_pinch() {
-        let mut r = TouchGestureRecognizer::new(GestureTuning::default());
+        let mut r = TouchGestureRecognizer::new(GestureTuning {
+            two_finger_scroll: false,
+            ..Default::default()
+        });
         r.set_native_touch_pinch(true);
         let t = Instant::now();
         r.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 0., 0.), t);

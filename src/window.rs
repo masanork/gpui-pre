@@ -9282,6 +9282,9 @@ mod tests {
             let events = events.clone();
             move |_, _| PinchListener { events }
         });
+        window.update(cx, |_, window, _| {
+            window.touch_gestures.set_two_finger_scroll(false);
+        }).unwrap();
         dispatch_touch(window, cx, TouchId(1), TouchPhase::Started, 10.);
         dispatch_touch(window, cx, TouchId(2), TouchPhase::Started, 20.);
         dispatch_touch(window, cx, TouchId(2), TouchPhase::Moved, 30.);
@@ -9310,6 +9313,9 @@ mod tests {
             let events = events.clone();
             move |_, _| PinchListener { events }
         });
+        window.update(cx, |_, window, _| {
+            window.touch_gestures.set_two_finger_scroll(false);
+        }).unwrap();
         window.update(cx, |_, window, _| {
             window.touch_gestures.set_native_touch_pinch(true);
         }).unwrap();
