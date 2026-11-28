@@ -62,6 +62,8 @@ pub struct Scene {
     pub textured_meshes: Vec<TexturedMesh>,
     /// Passes drawn to textures before the scene itself, in the order they were painted (see [`OffscreenPass`]).
     pub offscreens: Vec<OffscreenPass>,
+    /// Offscreen textures from the previous frame to keep without repainting (see [`Window::retain_offscreen`]).
+    pub retained_offscreens: Vec<OffscreenId>,
     current_offscreen: Option<(usize, Point<ScaledPixels>)>,
 }
 
@@ -71,6 +73,7 @@ impl Scene {
         self.textured_quads.clear();
         self.textured_meshes.clear();
         self.offscreens.clear();
+        self.retained_offscreens.clear();
         self.current_offscreen = None;
         self.paint_operations.clear();
         self.primitive_bounds.clear();
@@ -148,6 +151,13 @@ impl Scene {
             }
         };
         self.current_offscreen = Some((index, origin));
+    }
+
+    /// Keeps the offscreen texture `id` from the previous frame without repainting it.
+    pub fn retain_offscreen(&mut self, id: OffscreenId) {
+        if !self.retained_offscreens.contains(&id) {
+            self.retained_offscreens.push(id);
+        }
     }
 
     /// Asks for the pixels of the offscreen pass `id` painted in this scene (see [`OffscreenReadback`]); with no such pass, a readback with no picture.

@@ -1189,6 +1189,7 @@ pub struct Window {
     /// `record_paints_only`).
     paint_record_only: bool,
     prewarm_glyph_variants: bool,
+    cached_offscreens: FxHashMap<crate::OffscreenId, (u64, f32)>,
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
@@ -2045,6 +2046,7 @@ impl Window {
             paint_record: None,
             paint_record_only: false,
             prewarm_glyph_variants: false,
+            cached_offscreens: FxHashMap::default(),
             platform_window,
             display_id,
             is_resizable,
@@ -3486,6 +3488,10 @@ impl Window {
 
         self.layout_engine.as_mut().unwrap().clear();
         self.text_system().finish_frame();
+        self.cached_offscreens.retain(|id, _| {
+            self.next_frame.scene.offscreens.iter().any(|p| p.id == *id)
+                || self.next_frame.scene.retained_offscreens.contains(id)
+        });
         self.next_frame.finish(&mut self.rendered_frame);
 
         self.invalidator.set_phase(DrawPhase::Focus);
@@ -5366,6 +5372,23 @@ impl Window {
         self.content_mask_stack = saved_masks;
         self.next_frame.scene.end_offscreen();
         result
+    }
+
+    /// Keeps the offscreen texture `id` from the previous frame without repainting it.
+    pub fn retain_offscreen(&mut self, id: crate::OffscreenId) {
+        self.next_frame.scene.retain_offscreen(id);
+    }
+
+    pub(crate) fn can_reuse_offscreen(&self, id: crate::OffscreenId, key: u64) -> bool {
+        !self.paint_record_only
+            && !self.next_frame.scene.in_offscreen()
+            && self.cached_offscreens.get(&id).is_some_and(|&(k, scale)| k == key && scale == self.scale_factor)
+    }
+
+    pub(crate) fn record_cached_offscreen(&mut self, id: crate::OffscreenId, key: u64) {
+        if !self.paint_record_only && !self.next_frame.scene.in_offscreen() {
+            self.cached_offscreens.insert(id, (key, self.scale_factor));
+        }
     }
 
     /// The pixels of the offscreen pass `id` painted in this frame (see [`Window::paint_offscreen`]), as a future: the renderer copies the

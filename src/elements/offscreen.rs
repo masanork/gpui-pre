@@ -15,6 +15,8 @@ pub fn offscreen(id: OffscreenId, child: impl IntoElement) -> Offscreen {
         id,
         child: child.into_any_element(),
         on_read_back: None,
+        cache_key: None,
+        reused: false,
     }
 }
 
@@ -23,6 +25,8 @@ pub struct Offscreen {
     id: OffscreenId,
     child: AnyElement,
     on_read_back: Option<Box<dyn FnOnce(crate::OffscreenReadback, &mut Window, &mut App)>>,
+    cache_key: Option<u64>,
+    reused: bool,
 }
 
 impl Offscreen {
@@ -31,6 +35,13 @@ impl Offscreen {
     /// Added in ibisOffice's fork of gpui-pre 0.3.6.
     pub fn on_read_back(mut self, f: impl FnOnce(crate::OffscreenReadback, &mut Window, &mut App) + 'static) -> Self {
         self.on_read_back = Some(Box::new(f));
+        self
+    }
+
+    /// Reuses the previously painted offscreen texture when `key` and the window scale factor match, skipping child layout and paint.
+    /// Callers must include the element's size and all visual inputs in `key`, and place this element inside a container with explicit size.
+    pub fn cached(mut self, key: u64) -> Self {
+        self.cache_key = Some(key);
         self
     }
 }
@@ -53,6 +64,17 @@ impl Element for Offscreen {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
+        if let Some(key) = self.cache_key {
+            if self.on_read_back.is_none() && window.can_reuse_offscreen(self.id, key) {
+                self.reused = true;
+                let style = crate::Style {
+                    size: crate::size(crate::relative(1.0).into(), crate::relative(1.0).into()),
+                    ..Default::default()
+                };
+                return (window.request_layout(style, None, cx), ());
+            }
+        }
+        self.reused = false;
         (self.child.request_layout(window, cx), ())
     }
 
@@ -65,7 +87,9 @@ impl Element for Offscreen {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.child.prepaint(window, cx);
+        if !self.reused {
+            self.child.prepaint(window, cx);
+        }
     }
 
     fn paint(
@@ -79,8 +103,17 @@ impl Element for Offscreen {
         cx: &mut App,
     ) {
         let id = self.id;
+        if self.reused && self.on_read_back.is_none() {
+            window.retain_offscreen(id);
+            return;
+        }
         let child = &mut self.child;
         window.paint_offscreen(id, bounds, |window| child.paint(window, cx));
+        if let Some(key) = self.cache_key {
+            if bounds.size.width > crate::px(0.0) && bounds.size.height > crate::px(0.0) {
+                window.record_cached_offscreen(id, key);
+            }
+        }
         if let Some(f) = self.on_read_back.take() {
             let readback = window.read_back_offscreen(id);
             f(readback, window, cx);
