@@ -128,3 +128,94 @@ impl IntoElement for Offscreen {
         self
     }
 }
+
+/// Caches the painted GPU primitives of `child` under `id` and `key`, replaying them translated to `bounds.origin` on subsequent frames.
+pub fn cached_paint(id: u64, key: u64, child: impl IntoElement) -> CachedPaint {
+    CachedPaint {
+        id,
+        key,
+        child: child.into_any_element(),
+        reused: false,
+    }
+}
+
+/// See [`cached_paint`].
+pub struct CachedPaint {
+    id: u64,
+    key: u64,
+    child: AnyElement,
+    reused: bool,
+}
+
+impl Element for CachedPaint {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<crate::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        if window.can_reuse_cached_paint(self.id, self.key) {
+            self.reused = true;
+            let style = crate::Style {
+                size: crate::size(crate::relative(1.0).into(), crate::relative(1.0).into()),
+                ..Default::default()
+            };
+            return (window.request_layout(style, None, cx), ());
+        }
+        self.reused = false;
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if !self.reused {
+            self.child.prepaint(window, cx);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.reused {
+            window.replay_cached_paint(self.id, bounds.origin);
+            return;
+        }
+        let start_op = window.current_scene_op_len();
+        self.child.paint(window, cx);
+        window.record_cached_paint(self.id, self.key, bounds.origin, start_op);
+    }
+}
+
+impl IntoElement for CachedPaint {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}

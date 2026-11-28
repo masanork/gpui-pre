@@ -269,6 +269,36 @@ impl Scene {
         }
     }
 
+    /// Capture primitives from `paint_operations[range]` into a [`SceneSnapshot`].
+    pub fn snapshot_range(&self, range: Range<usize>) -> SceneSnapshot {
+        let mut primitives = Vec::new();
+        for operation in &self.paint_operations[range] {
+            if let PaintOperation::Primitive(primitive) = operation {
+                primitives.push(primitive.clone());
+            }
+        }
+        SceneSnapshot {
+            primitives: Arc::new(primitives),
+        }
+    }
+
+    /// Replay a [`SceneSnapshot`] translated by `offset` device pixels and clipped to `clip`.
+    pub fn replay_offset(
+        &mut self,
+        snapshot: &SceneSnapshot,
+        offset: (f32, f32),
+        clip: Bounds<ScaledPixels>,
+    ) {
+        if clip.is_empty() {
+            return;
+        }
+        for primitive in snapshot.primitives.iter() {
+            if let Some(moved) = primitive.transform_around(Point::default(), 1.0, offset, clip) {
+                self.insert_primitive(moved);
+            }
+        }
+    }
+
     /// Capture primitives from this scene whose clipped bounds intersect `region`.
     ///
     /// Added in ibisOffice's fork of gpui-pre 0.3.6.

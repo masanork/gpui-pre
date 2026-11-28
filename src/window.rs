@@ -1190,6 +1190,8 @@ pub struct Window {
     paint_record_only: bool,
     prewarm_glyph_variants: bool,
     cached_offscreens: FxHashMap<crate::OffscreenId, (u64, f32)>,
+    cached_paints: FxHashMap<u64, (u64, f32, Point<ScaledPixels>, SceneSnapshot)>,
+    retained_cached_paints: Vec<u64>,
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
@@ -2047,6 +2049,8 @@ impl Window {
             paint_record_only: false,
             prewarm_glyph_variants: false,
             cached_offscreens: FxHashMap::default(),
+            cached_paints: FxHashMap::default(),
+            retained_cached_paints: Vec::new(),
             platform_window,
             display_id,
             is_resizable,
@@ -3492,6 +3496,9 @@ impl Window {
             self.next_frame.scene.offscreens.iter().any(|p| p.id == *id)
                 || self.next_frame.scene.retained_offscreens.contains(id)
         });
+        let retained_paints = &self.retained_cached_paints;
+        self.cached_paints.retain(|id, _| retained_paints.contains(id));
+        self.retained_cached_paints.clear();
         self.next_frame.finish(&mut self.rendered_frame);
 
         self.invalidator.set_phase(DrawPhase::Focus);
@@ -5388,6 +5395,40 @@ impl Window {
     pub(crate) fn record_cached_offscreen(&mut self, id: crate::OffscreenId, key: u64) {
         if !self.paint_record_only && !self.next_frame.scene.in_offscreen() {
             self.cached_offscreens.insert(id, (key, self.scale_factor));
+        }
+    }
+
+    pub(crate) fn can_reuse_cached_paint(&self, id: u64, key: u64) -> bool {
+        !self.paint_record_only
+            && !self.next_frame.scene.in_offscreen()
+            && self.cached_paints.get(&id).is_some_and(|(k, scale, _, _)| *k == key && *scale == self.scale_factor)
+    }
+
+    pub(crate) fn current_scene_op_len(&self) -> usize {
+        self.next_frame.scene.len()
+    }
+
+    pub(crate) fn record_cached_paint(&mut self, id: u64, key: u64, origin: Point<Pixels>, start_op: usize) {
+        if !self.paint_record_only && !self.next_frame.scene.in_offscreen() {
+            let end_op = self.next_frame.scene.len();
+            let snapshot = self.next_frame.scene.snapshot_range(start_op..end_op);
+            let scaled_origin = origin.scale(self.scale_factor());
+            self.cached_paints.insert(id, (key, self.scale_factor, scaled_origin, snapshot));
+            self.retained_cached_paints.push(id);
+        }
+    }
+
+    pub(crate) fn replay_cached_paint(&mut self, id: u64, origin: Point<Pixels>) {
+        if self.paint_record_only || self.next_frame.scene.in_offscreen() {
+            return;
+        }
+        let scale_factor = self.scale_factor();
+        let new_origin = origin.scale(scale_factor);
+        let clip = self.snapped_content_mask().bounds;
+        if let Some((_, _, old_origin, snapshot)) = self.cached_paints.get(&id).cloned() {
+            let offset = (new_origin.x.0 - old_origin.x.0, new_origin.y.0 - old_origin.y.0);
+            self.next_frame.scene.replay_offset(&snapshot, offset, clip);
+            self.retained_cached_paints.push(id);
         }
     }
 
