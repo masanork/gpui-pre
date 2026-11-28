@@ -282,18 +282,22 @@ impl Scene {
         }
     }
 
-    /// Replay a [`SceneSnapshot`] translated by `offset` device pixels and clipped to `clip`.
+    /// Replay a [`SceneSnapshot`] translated by `offset` device pixels, scaled in alpha by `opacity`, and clipped to `clip`.
     pub fn replay_offset(
         &mut self,
         snapshot: &SceneSnapshot,
         offset: (f32, f32),
+        opacity: f32,
         clip: Bounds<ScaledPixels>,
     ) {
-        if clip.is_empty() {
+        if clip.is_empty() || opacity <= 0.0 {
             return;
         }
         for primitive in snapshot.primitives.iter() {
-            if let Some(moved) = primitive.transform_around(Point::default(), 1.0, offset, clip) {
+            if let Some(mut moved) = primitive.transform_around(Point::default(), 1.0, offset, clip) {
+                if opacity < 1.0 {
+                    moved.apply_opacity(opacity);
+                }
                 self.insert_primitive(moved);
             }
         }
@@ -499,6 +503,26 @@ impl Primitive {
         clip: Bounds<ScaledPixels>,
     ) -> Option<Primitive> {
         self.transform_around(origin, scale, (0., 0.), clip)
+    }
+
+    /// Multiplies the alpha / opacity of this primitive by `opacity` (in 0..=1).
+    pub fn apply_opacity(&mut self, opacity: f32) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        match self {
+            Primitive::Shadow(s) => s.color = s.color.opacity(opacity),
+            Primitive::Quad(q) => {
+                q.background = q.background.opacity(opacity);
+                q.border_color = q.border_color.opacity(opacity);
+            }
+            Primitive::Path(p) => p.color = p.color.opacity(opacity),
+            Primitive::Underline(u) => u.color = u.color.opacity(opacity),
+            Primitive::MonochromeSprite(s) => s.color = s.color.opacity(opacity),
+            Primitive::SubpixelSprite(s) => s.color = s.color.opacity(opacity),
+            Primitive::PolychromeSprite(s) => s.opacity *= opacity,
+            Primitive::Surface(_) => {}
+            Primitive::TexturedQuad(q) => q.opacity *= opacity,
+            Primitive::TexturedMesh(m) => m.opacity *= opacity,
+        }
     }
 
     /// The primitive moved by (dx, dy) device pixels (for the coordinates of an offscreen pass).

@@ -5418,7 +5418,7 @@ impl Window {
         }
     }
 
-    pub(crate) fn replay_cached_paint(&mut self, id: u64, origin: Point<Pixels>) {
+    pub(crate) fn replay_cached_paint(&mut self, id: u64, origin: Point<Pixels>, opacity: f32) {
         if self.paint_record_only || self.next_frame.scene.in_offscreen() {
             return;
         }
@@ -5427,7 +5427,7 @@ impl Window {
         let clip = self.snapped_content_mask().bounds;
         if let Some((_, _, old_origin, snapshot)) = self.cached_paints.get(&id).cloned() {
             let offset = (new_origin.x.0 - old_origin.x.0, new_origin.y.0 - old_origin.y.0);
-            self.next_frame.scene.replay_offset(&snapshot, offset, clip);
+            self.next_frame.scene.replay_offset(&snapshot, offset, opacity, clip);
             self.retained_cached_paints.push(id);
         }
     }

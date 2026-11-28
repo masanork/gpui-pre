@@ -134,6 +134,7 @@ pub fn cached_paint(id: u64, key: u64, child: impl IntoElement) -> CachedPaint {
     CachedPaint {
         id,
         key,
+        opacity: 1.0,
         child: child.into_any_element(),
         reused: false,
     }
@@ -143,8 +144,17 @@ pub fn cached_paint(id: u64, key: u64, child: impl IntoElement) -> CachedPaint {
 pub struct CachedPaint {
     id: u64,
     key: u64,
+    opacity: f32,
     child: AnyElement,
     reused: bool,
+}
+
+impl CachedPaint {
+    /// Scales the alpha of all cached primitives by `opacity` on replay (captures at full opacity on the initial frame).
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
 }
 
 impl Element for CachedPaint {
@@ -203,7 +213,13 @@ impl Element for CachedPaint {
         cx: &mut App,
     ) {
         if self.reused {
-            window.replay_cached_paint(self.id, bounds.origin);
+            window.replay_cached_paint(self.id, bounds.origin, self.opacity);
+            return;
+        }
+        if self.opacity < 1.0 {
+            window.with_element_opacity(Some(self.opacity), |window| {
+                self.child.paint(window, cx);
+            });
             return;
         }
         let start_op = window.current_scene_op_len();
